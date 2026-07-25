@@ -17,7 +17,7 @@ async function startSession(userId, phone) {
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: ["Ubuntu", "Chrome", "20.0.04"] // લિંક કોડ માટે આ જરૂરી છે
+        browser: ["Windows", "Chrome", "120.0.0.0"] // અહી ફેરફાર કર્યો છે (WhatsApp ને બાયપાસ કરવા)
     });
 
     // જો નવું કનેક્શન હોય અને મોબાઈલ નંબર આપ્યો હોય તો લિંક કોડ મંગાવો
