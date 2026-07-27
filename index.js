@@ -29,27 +29,35 @@ async function connectToWhatsApp() {
         // નવો QR કોડ આવે ત્યારે તેને સેવ કરો
         if (qr) {
             qrCodeData = qr;
+            console.log('✅ નવો QR કોડ તૈયાર છે! બ્રાઉઝરમાં લિંક ઓપન કરો.');
         }
 
         if (connection === 'close') {
             isConnected = false;
-            qrCodeData = null;
+            
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
             
             if (shouldReconnect) {
-                console.log('🔄 ફરીથી કનેક્ટ થઈ રહ્યું છે...');
-                connectToWhatsApp();
+                console.log('🔄 5 સેકન્ડ પછી ફરીથી કનેક્ટ થઈ રહ્યું છે...');
+                // અહીં 5 સેકન્ડનો બ્રેક આપ્યો છે જેથી લૂપ ન બને
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 5000);
             } else {
                 console.log('❌ ડિવાઇસ લોગઆઉટ થઈ ગયું છે. જૂનો ડેટા ડિલીટ થાય છે.');
+                qrCodeData = null;
                 if (fs.existsSync('auth_info')) {
                     fs.rmSync('auth_info', { recursive: true, force: true });
                 }
-                connectToWhatsApp(); // નવો QR જનરેટ કરવા ફરી ચાલુ કરો
+                // ડેટા ડિલીટ કર્યા પછી નવો QR જનરેટ કરવા માટે ફરી ચાલુ કરો
+                setTimeout(() => {
+                    connectToWhatsApp();
+                }, 3000);
             }
         } else if (connection === 'open') {
             isConnected = true;
             qrCodeData = null; // કનેક્ટ થયા પછી QR ની જરૂર નથી
-            console.log('✅ WhatsApp કનેક્ટ થઈ ગયું છે!');
+            console.log('✅ WhatsApp સફળતાપૂર્વક કનેક્ટ થઈ ગયું છે!');
         }
     });
 }
@@ -59,7 +67,7 @@ connectToWhatsApp();
 
 // ---- API ROUTES ----
 
-// ૧. QR કોડ જોવા માટે (કોઈ ID ની જરૂર નથી)
+// ૧. QR કોડ જોવા માટેની લિંક
 app.get('/qr', async (req, res) => {
     if (isConnected) {
         return res.send(`
@@ -73,8 +81,8 @@ app.get('/qr', async (req, res) => {
     if (!qrCodeData) {
         return res.send(`
             <div style="text-align: center; margin-top: 50px; font-family: Arial;">
-                <h2 style="color: orange;">⏳ QR કોડ બની રહ્યો છે...</h2>
-                <p>કૃપા કરીને 5-10 સેકન્ડ પછી આ પેજ <b>રિફ્રેશ</b> કરો.</p>
+                <h2 style="color: orange;">⏳ QR કોડ બની રહ્યો છે... થોડીવાર રાહ જુઓ.</h2>
+                <p>કૃપા કરીને 5 થી 10 સેકન્ડ પછી આ પેજ <b>રિફ્રેશ</b> કરો.</p>
             </div>
         `);
     }
@@ -84,9 +92,9 @@ app.get('/qr', async (req, res) => {
         res.send(`
             <div style="text-align: center; margin-top: 50px; font-family: Arial;">
                 <h2 style="color: #2c3e50;">📱 HARDI MESSAGING</h2>
-                <p><b>તમારા WhatsApp માંથી આ QR કોડ સ્કેન કરો (માત્ર 1 PC માટે)</b></p>
+                <p><b>તમારા WhatsApp માંથી આ QR કોડ સ્કેન કરો</b></p>
                 <img src="${qrImage}" alt="QR Code" style="border: 2px solid #000; border-radius: 10px; padding: 15px; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);">
-                <p style="color: red; margin-top: 20px;">(જો સ્કેન કરવામાં એરર આવે, તો પેજ રિફ્રેશ કરીને નવો કોડ સ્કેન કરો)</p>
+                <p style="color: red; margin-top: 20px;">(નોંધ: જો સ્કેન કરવામાં એરર આવે, તો પેજ રિફ્રેશ કરીને નવો કોડ સ્કેન કરો)</p>
             </div>
         `);
     } catch (err) {
@@ -94,20 +102,23 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// ૨. લોગઆઉટ અથવા રીસેટ કરવા માટે
+// ૨. લોગઆઉટ અથવા બધું રીસેટ કરવા માટેની લિંક
 app.get('/reset', (req, res) => {
     if (fs.existsSync('auth_info')) {
         fs.rmSync('auth_info', { recursive: true, force: true });
     }
-    process.exit(1); // Render સર્વરને રિસ્ટાર્ટ કરવા માટે
+    res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ ડેટા સાફ થઈ ગયો છે. સર્વર રિસ્ટાર્ટ થઈ રહ્યું છે...</h2>');
+    setTimeout(() => {
+        process.exit(1); // Render સર્વરને રિસ્ટાર્ટ કરવા માટે
+    }, 2000);
 });
 
-// ૩. મેસેજ મોકલવા માટે
+// ૩. મેસેજ મોકલવા માટેની લિંક (API)
 app.post('/api/send', async (req, res) => {
     const { number, message } = req.body;
 
     if (!isConnected || !sock) {
-        return res.status(400).json({ success: false, msg: '❌ WhatsApp હજુ કનેક્ટ નથી થયું. પહેલા /qr પર જઈને સ્કેન કરો.' });
+        return res.status(400).json({ success: false, msg: '❌ WhatsApp હજુ કનેક્ટ નથી થયું. પહેલા /qr વાળી લિંક પર જઈને સ્કેન કરો.' });
     }
 
     try {
@@ -119,7 +130,7 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
-// ૪. પિંગ 
+// ૪. પિંગ (સર્વર ચાલુ છે કે નહીં તે ચેક કરવા)
 app.get('/ping', (req, res) => res.send('pong'));
 
 const PORT = process.env.PORT || 10000;
