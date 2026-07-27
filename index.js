@@ -23,13 +23,14 @@ process.on('unhandledRejection', (reason, promise) => {
 
 // સિંગલ સેશન માટેનું ફંક્શન
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
+    // 🎯 અહીં મેં જૂના 'auth_info' ફોલ્ડરની જગ્યાએ નવું 'baps_session' ફોલ્ડર બનાવી દીધું છે!
+    const { state, saveCreds } = await useMultiFileAuthState('baps_session');
 
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
-        browser: Browsers.macOS('Desktop') // સર્વરને મેકબુક (Mac) તરીકે બતાવવા જેથી કનેક્શન ન તૂટે
+        browser: Browsers.macOS('Desktop')
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -37,7 +38,6 @@ async function connectToWhatsApp() {
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // નવો QR કોડ આવે ત્યારે તેને સેવ કરો
         if (qr) {
             qrCodeData = qr;
             console.log('✅ નવો QR કોડ તૈયાર છે! બ્રાઉઝરમાં લિંક ઓપન કરો.');
@@ -45,23 +45,19 @@ async function connectToWhatsApp() {
 
         if (connection === 'close') {
             isConnected = false;
-            
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
             
             if (shouldReconnect) {
                 console.log('🔄 5 સેકન્ડ પછી ફરીથી કનેક્ટ થઈ રહ્યું છે...');
-                setTimeout(() => {
-                    connectToWhatsApp();
-                }, 5000);
+                setTimeout(() => { connectToWhatsApp(); }, 5000);
             } else {
                 console.log('❌ ડિવાઇસ લોગઆઉટ થઈ ગયું છે. જૂનો ડેટા ડિલીટ થાય છે.');
                 qrCodeData = null;
-                if (fs.existsSync('auth_info')) {
-                    fs.rmSync('auth_info', { recursive: true, force: true });
+                // નવા ફોલ્ડરને ડિલીટ કરવાનું લોજીક
+                if (fs.existsSync('baps_session')) {
+                    fs.rmSync('baps_session', { recursive: true, force: true });
                 }
-                setTimeout(() => {
-                    connectToWhatsApp();
-                }, 3000);
+                setTimeout(() => { connectToWhatsApp(); }, 3000);
             }
         } else if (connection === 'open') {
             isConnected = true;
@@ -71,19 +67,17 @@ async function connectToWhatsApp() {
     });
 }
 
-// સર્વર ચાલુ થાય ત્યારે સીધું WhatsApp કનેક્શન ચાલુ કરો
 connectToWhatsApp();
 
 
 // ---- API ROUTES ----
 
-// ૧. QR કોડ જોવા માટેની લિંક
 app.get('/qr', async (req, res) => {
     if (isConnected) {
         return res.send(`
             <div style="text-align: center; margin-top: 50px; font-family: Arial;">
                 <h1 style="color: green;">✅ સક્સેસ!</h1>
-                <h2>તમારું WhatsApp પહેલેથી જ કનેક્ટેડ છે! હવે આ પેજ બંધ કરી શકો છો.</h2>
+                <h2>તમારું WhatsApp પહેલેથી જ કનેક્ટેડ છે!</h2>
             </div>
         `);
     }
@@ -91,8 +85,7 @@ app.get('/qr', async (req, res) => {
     if (!qrCodeData) {
         return res.send(`
             <div style="text-align: center; margin-top: 50px; font-family: Arial;">
-                <h2 style="color: orange;">⏳ QR કોડ બની રહ્યો છે... થોડીવાર રાહ જુઓ.</h2>
-                <p>કૃપા કરીને 5 થી 10 સેકન્ડ પછી આ પેજ <b>રિફ્રેશ</b> કરો.</p>
+                <h2 style="color: orange;">⏳ QR કોડ બની રહ્યો છે... 5 સેકન્ડ પછી પેજ રિફ્રેશ કરો.</h2>
             </div>
         `);
     }
@@ -103,8 +96,7 @@ app.get('/qr', async (req, res) => {
             <div style="text-align: center; margin-top: 50px; font-family: Arial;">
                 <h2 style="color: #2c3e50;">📱 HARDI MESSAGING</h2>
                 <p><b>તમારા WhatsApp માંથી આ QR કોડ સ્કેન કરો</b></p>
-                <img src="${qrImage}" alt="QR Code" style="border: 2px solid #000; border-radius: 10px; padding: 15px; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);">
-                <p style="color: red; margin-top: 20px;">(નોંધ: જો સ્કેન કરવામાં એરર આવે, તો પેજ રિફ્રેશ કરીને નવો કોડ સ્કેન કરો)</p>
+                <img src="${qrImage}" style="border: 2px solid #000; border-radius: 10px; padding: 15px; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);">
             </div>
         `);
     } catch (err) {
@@ -112,18 +104,14 @@ app.get('/qr', async (req, res) => {
     }
 });
 
-// ૨. લોગઆઉટ અથવા બધું રીસેટ કરવા માટેની લિંક
 app.get('/reset', (req, res) => {
-    if (fs.existsSync('auth_info')) {
-        fs.rmSync('auth_info', { recursive: true, force: true });
+    if (fs.existsSync('baps_session')) {
+        fs.rmSync('baps_session', { recursive: true, force: true });
     }
-    res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ ડેટા સાફ થઈ ગયો છે. સર્વર રિસ્ટાર્ટ થઈ રહ્યું છે...</h2>');
-    setTimeout(() => {
-        process.exit(1); // Render સર્વરને રિસ્ટાર્ટ કરવા માટે
-    }, 2000);
+    res.send('<h2 style="color: green; text-align: center; margin-top: 50px;">✅ નવો ડેટા પણ સાફ થઈ ગયો છે. સર્વર રિસ્ટાર્ટ થઈ રહ્યું છે...</h2>');
+    setTimeout(() => { process.exit(1); }, 2000);
 });
 
-// ૩. મેસેજ મોકલવા માટેની લિંક (API)
 app.post('/api/send', async (req, res) => {
     const { number, message } = req.body;
 
@@ -132,23 +120,16 @@ app.post('/api/send', async (req, res) => {
     }
 
     try {
-        // નંબર ક્લિયર કરી JID ફોર્મેટ બનાવવું
         let jid = number.toString().replace(/\D/g, '');
-        if (jid.length === 10) {
-            jid = "91" + jid;
-        }
-        if (!jid.includes('@s.whatsapp.net')) {
-            jid = jid + '@s.whatsapp.net';
-        }
+        if (jid.length === 10) jid = "91" + jid;
+        if (!jid.includes('@s.whatsapp.net')) jid = jid + '@s.whatsapp.net';
 
-        // 🛡️ ચેક કરો કે આ નંબર પર WhatsApp ચાલુ છે કે નહીં? (આનાથી સર્વર ક્રેશ નહિ થાય)
         const [result] = await sock.onWhatsApp(jid);
         if (!result || !result.exists) {
             console.log(`❌ ${jid} પર WhatsApp ચાલુ નથી.`);
             return res.status(400).json({ success: false, msg: '❌ આ નંબર પર WhatsApp ચાલુ નથી.' });
         }
 
-        // મેસેજ મોકલો
         await sock.sendMessage(jid, { text: message });
         console.log(`✅ ${jid} ને મેસેજ સફળતાપૂર્વક મોકલાયો.`);
         res.json({ success: true, msg: '✅ મેસેજ મોકલાયો!' });
@@ -159,7 +140,6 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
-// ૪. પિંગ (સર્વર જાગતું રાખવા માટે)
 app.get('/ping', (req, res) => {
     console.log('🏓 Google Sheet માંથી Ping આવ્યું! (સર્વર જાગી રહ્યું છે)');
     res.send('pong');
