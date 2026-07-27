@@ -1,121 +1,132 @@
 const express = require('express');
-const { makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const qrcode = require('qrcode');
 const pino = require('pino');
-const fs = require('fs'); 
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json());
 
-const sessions = new Map();
-const pairingCodes = new Map(); // લિંક કોડ સેવ કરવા માટે
+// અલગ-અલગ સેશન (Device) સાચવવા માટે
+const sessions = {}; 
 
-async function startSession(userId, phone) {
-    const { state, saveCreds } = await useMultiFileAuthState(`auth_info_${userId}`);
+async function createSession(id, res = null) {
+    const sessionPath = path.join(__dirname, 'sessions', id);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: "silent" }),
-        browser: ["Windows", "Chrome", "120.0.0.0"] // અહી ફેરફાર કર્યો છે (WhatsApp ને બાયપાસ કરવા)
-    });
-
-    // જો નવું કનેક્શન હોય અને મોબાઈલ નંબર આપ્યો હોય તો લિંક કોડ મંગાવો
-    if (phone && !sock.authState.creds.registered) {
-        setTimeout(async () => {
-            try {
-                let formattedPhone = phone.toString().replace(/[^0-9]/g, '');
-                if (!formattedPhone.startsWith("91")) formattedPhone = "91" + formattedPhone;
-                
-                const code = await sock.requestPairingCode(formattedPhone);
-                pairingCodes.set(userId, code);
-                console.log(`Pairing code for ${userId}: ${code}`);
-            } catch (err) {
-                console.log("Error getting code:", err.message);
-            }
-        }, 3000);
-    }
-
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
-        
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== 401;
-            if (shouldReconnect) {
-                startSession(userId); 
-            } else {
-                sessions.delete(userId);
-                pairingCodes.delete(userId);
-            }
-        } else if (connection === 'open') {
-            sessions.set(userId, sock);
-            pairingCodes.delete(userId); 
-            console.log(`✅ User: ${userId} - Connected!`);
-        }
+        logger: pino({ level: 'silent' })
     });
 
     sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+
+        // ૧. ડાયરેક્ટ બ્રાઉઝરમાં QR કોડ બતાવવા
+        if (qr && res && !res.headersSent) {
+            try {
+                const qrImage = await qrcode.toDataURL(qr);
+                res.send(`
+                    <div style="text-align: center; margin-top: 50px; font-family: Arial;">
+                        <h2 style="color: #2c3e50;">📱 HARDI MESSAGING</h2>
+                        <h3 style="color: #e67e22;">Device ID: ${id.toUpperCase()}</h3>
+                        <p><b>તમારા WhatsApp માંથી આ QR કોડ સ્કેન કરો</b></p>
+                        <img src="${qrImage}" alt="QR Code" style="border: 2px solid #000; border-radius: 10px; padding: 15px; box-shadow: 0px 4px 10px rgba(0,0,0,0.2);">
+                        <p style="color: red; margin-top: 20px;">(નોંધ: જો QR કોડ જતો રહે, તો પેજ જાતે રિફ્રેશ કરજો)</p>
+                    </div>
+                `);
+            } catch (err) {
+                res.send("QR કોડ બનાવવામાં ભૂલ આવી.");
+            }
+        }
+
+        // ૨. કનેક્શન બંધ થાય ત્યારે
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                createSession(id); 
+            } else {
+                if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
+                delete sessions[id];
+            }
+        } 
+        // ૩. કનેક્શન સફળ થઈ જાય ત્યારે
+        else if (connection === 'open') {
+            sessions[id] = sock;
+            if (res && !res.headersSent) {
+                res.send(`<h1 style="color: green; text-align: center; margin-top:50px;">✅ સક્સેસ! કનેક્શન થઈ ગયું! હવે આ પેજ બંધ કરી દો.</h1>`);
+            }
+        }
+    });
+
+    sessions[id] = sock;
 }
 
-app.get('/ping', (req, res) => {
-    res.send('Server is Awake 24/7');
-});
+// ---- API ROUTES ----
 
-// નવું API - હવે QR ની જગ્યાએ 8 આંકડાનો કોડ આપશે
-app.get('/api/session/start', async (req, res) => {
-    const userId = req.query.userid;
-    const phone = req.query.phone; // કયો નંબર લિંક કરવો છે
+// ૧. QR કોડ જોવા માટે
+app.get('/qr', (req, res) => {
+    const id = req.query.id;
+    if (!id) return res.send('<h2 style="color:red; text-align:center;">❌ ભૂલ: લિંકમાં id લખો.</h2>');
     
-    if (!userId) return res.status(400).json({ error: "userid is required" });
-
-    if (!sessions.has(userId)) {
-        startSession(userId, phone);
+    // જો સેશન ફસાયેલું હોય તો લાલ બટન (Reset) આપો
+    if (sessions[id]) {
+        return res.send(`
+            <div style="text-align:center; font-family:Arial; margin-top:50px;">
+                <h2 style="color:orange;">⚠️ <b>${id}</b> સેશન ફસાયેલું છે અથવા પહેલેથી ચાલુ છે!</h2>
+                <p>જો તમારે આને ફરીથી સ્કેન કરવું હોય તો નીચેનું બટન દબાવો:</p>
+                <br>
+                <a href="/reset?id=${id}" style="padding:10px 20px; background:red; color:white; text-decoration:none; border-radius:5px; font-size:18px;">🔄 સેશન રીસેટ કરો</a>
+            </div>
+        `);
     }
+    createSession(id, res);
+});
+
+// ૨. ફસાયેલા ID ને રીસેટ કરવા માટે (Smart Tool)
+app.get('/reset', (req, res) => {
+    const id = req.query.id;
+    if (!id) return res.send("ID આપો");
+
+    if (sessions[id]) delete sessions[id];
+    const sessionPath = path.join(__dirname, 'sessions', id);
+    if (fs.existsSync(sessionPath)) fs.rmSync(sessionPath, { recursive: true, force: true });
     
-    setTimeout(() => {
-        const isConnected = sessions.has(userId) && sessions.get(userId).user;
-        const pCode = pairingCodes.get(userId) || null;
-        res.json({ userid: userId, connected: !!isConnected, pairingCode: pCode });
-    }, 6000); // 6 સેકન્ડમાં કોડ આવી જશે
+    res.send(`
+        <div style="text-align:center; font-family:Arial; margin-top:50px;">
+            <h2 style="color:green;">✅ ${id} નું સેશન સાફ થઈ ગયું!</h2>
+            <br>
+            <a href="/qr?id=${id}" style="padding:10px 20px; background:blue; color:white; text-decoration:none; border-radius:5px; font-size:18px;">👉 નવો QR કોડ મંગાવો</a>
+        </div>
+    `);
 });
 
-app.get('/api/session/status', (req, res) => {
-    const userId = req.query.userid;
-    const isConnected = sessions.has(userId) && sessions.get(userId).user;
-    res.json({ userid: userId, connected: !!isConnected });
-});
-
-app.get('/api/session/logout', (req, res) => {
-    const userId = req.query.userid;
-    if (sessions.has(userId)) {
-        sessions.get(userId).logout();
-        sessions.delete(userId);
-    }
-    pairingCodes.delete(userId);
-    const folderPath = `./auth_info_${userId}`;
-    if (fs.existsSync(folderPath)) {
-        fs.rmSync(folderPath, { recursive: true, force: true });
-    }
-    res.json({ success: true, message: `User ${userId} logged out successfully.` });
-});
-
+// ૩. મેસેજ મોકલવા માટે
 app.post('/api/send', async (req, res) => {
-    const userId = req.query.userid;
+    const id = req.query.id || req.query.userid;
     const { number, message } = req.body;
 
-    if (!userId || !sessions.has(userId)) return res.status(401).json({ success: false, msg: `User not connected` });
+    if (!id || !sessions[id]) {
+        return res.status(400).json({ success: false, msg: `ID '${id}' કનેક્ટેડ નથી. પહેલા QR સ્કેન કરો.` });
+    }
 
     try {
-        let formattedNumber = number.toString().trim().replace(/[^0-9]/g, '');
-        if (!formattedNumber.startsWith("91")) formattedNumber = "91" + formattedNumber;
-        const jid = formattedNumber + "@s.whatsapp.net"; 
-        
-        const sock = sessions.get(userId);
-        await sock.sendMessage(jid, { text: message || "" });
-        res.json({ success: true, msg: "Message Sent!" });
-    } catch (err) {
-        res.status(500).json({ success: false, msg: err.message });
+        const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
+        await sessions[id].sendMessage(jid, { text: message });
+        res.json({ success: true, msg: `મેસેજ મોકલાયો!`, id: id });
+    } catch (error) {
+        res.status(500).json({ success: false, msg: error.message });
     }
 });
 
-app.listen(process.env.PORT || 10000, '0.0.0.0', () => console.log(`Server Running`));
+// ૪. પિંગ 
+app.get('/ping', (req, res) => res.send('pong'));
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`🚀 HARDI સર્વર પોર્ટ ${PORT} પર ચાલુ છે...`);
+});
