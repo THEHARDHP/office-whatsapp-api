@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
@@ -11,6 +11,16 @@ let sock;
 let qrCodeData = null;
 let isConnected = false;
 
+// ----------------------------------------------------
+// 🛡️ ANTI-CRASH SYSTEM (સર્વરને બંધ થતું અટકાવવા)
+// ----------------------------------------------------
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection:', reason);
+});
+
 // સિંગલ સેશન માટેનું ફંક્શન
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
@@ -18,7 +28,8 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' })
+        logger: pino({ level: 'silent' }),
+        browser: Browsers.macOS('Desktop') // સર્વરને મેકબુક (Mac) તરીકે બતાવવા જેથી કનેક્શન ન તૂટે
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -39,7 +50,6 @@ async function connectToWhatsApp() {
             
             if (shouldReconnect) {
                 console.log('🔄 5 સેકન્ડ પછી ફરીથી કનેક્ટ થઈ રહ્યું છે...');
-                // અહીં 5 સેકન્ડનો બ્રેક આપ્યો છે જેથી લૂપ ન બને
                 setTimeout(() => {
                     connectToWhatsApp();
                 }, 5000);
@@ -49,14 +59,13 @@ async function connectToWhatsApp() {
                 if (fs.existsSync('auth_info')) {
                     fs.rmSync('auth_info', { recursive: true, force: true });
                 }
-                // ડેટા ડિલીટ કર્યા પછી નવો QR જનરેટ કરવા માટે ફરી ચાલુ કરો
                 setTimeout(() => {
                     connectToWhatsApp();
                 }, 3000);
             }
         } else if (connection === 'open') {
             isConnected = true;
-            qrCodeData = null; // કનેક્ટ થયા પછી QR ની જરૂર નથી
+            qrCodeData = null; 
             console.log('✅ WhatsApp સફળતાપૂર્વક કનેક્ટ થઈ ગયું છે!');
         }
     });
@@ -64,6 +73,7 @@ async function connectToWhatsApp() {
 
 // સર્વર ચાલુ થાય ત્યારે સીધું WhatsApp કનેક્શન ચાલુ કરો
 connectToWhatsApp();
+
 
 // ---- API ROUTES ----
 
@@ -118,14 +128,33 @@ app.post('/api/send', async (req, res) => {
     const { number, message } = req.body;
 
     if (!isConnected || !sock) {
-        return res.status(400).json({ success: false, msg: '❌ WhatsApp હજુ કનેક્ટ નથી થયું. પહેલા /qr વાળી લિંક પર જઈને સ્કેન કરો.' });
+        return res.status(400).json({ success: false, msg: '❌ WhatsApp હજુ કનેક્ટ નથી થયું.' });
     }
 
     try {
-        const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
+        // નંબર ક્લિયર કરી JID ફોર્મેટ બનાવવું
+        let jid = number.toString().replace(/\D/g, '');
+        if (jid.length === 10) {
+            jid = "91" + jid;
+        }
+        if (!jid.includes('@s.whatsapp.net')) {
+            jid = jid + '@s.whatsapp.net';
+        }
+
+        // 🛡️ ચેક કરો કે આ નંબર પર WhatsApp ચાલુ છે કે નહીં? (આનાથી સર્વર ક્રેશ નહિ થાય)
+        const [result] = await sock.onWhatsApp(jid);
+        if (!result || !result.exists) {
+            console.log(`❌ ${jid} પર WhatsApp ચાલુ નથી.`);
+            return res.status(400).json({ success: false, msg: '❌ આ નંબર પર WhatsApp ચાલુ નથી.' });
+        }
+
+        // મેસેજ મોકલો
         await sock.sendMessage(jid, { text: message });
+        console.log(`✅ ${jid} ને મેસેજ સફળતાપૂર્વક મોકલાયો.`);
         res.json({ success: true, msg: '✅ મેસેજ મોકલાયો!' });
+
     } catch (error) {
+        console.error("❌ Send Error:", error.message);
         res.status(500).json({ success: false, msg: error.message });
     }
 });
