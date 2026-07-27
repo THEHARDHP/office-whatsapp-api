@@ -130,8 +130,11 @@ app.post('/api/send', async (req, res) => {
     }
 });
 
-// ૪. પિંગ (સર્વર ચાલુ છે કે નહીં તે ચેક કરવા)
-app.get('/ping', (req, res) => res.send('pong'));
+// ૪. પિંગ (સર્વર જાગતું રાખવા માટે)
+app.get('/ping', (req, res) => {
+    console.log('🏓 Google Sheet માંથી Ping આવ્યું! (સર્વર જાગી રહ્યું છે)');
+    res.send('pong');
+});
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
